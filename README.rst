@@ -100,3 +100,13 @@ Basic usage:
 
     # cancel watch
     etcd.cancel_watch(watch_id)
+
+
+Asyncio usage:
+
+.. code-block:: python
+
+    import etcd3
+
+    etcd = await etcd3.aioclient()
+    foo = await etcd.get('foo')

@@ -4,8 +4,10 @@ Tests for `etcd3` module.
 ----------------------------------
 """
 
+import asyncio
 import base64
 import contextlib
+import inspect
 import json
 import os
 import signal
@@ -17,7 +19,7 @@ import time
 
 import grpc
 
-from hypothesis import given, settings
+from hypothesis import given, settings, HealthCheck
 from hypothesis.strategies import characters
 
 import mock
@@ -46,7 +48,10 @@ else:
 
 
 # Don't set any deadline in Hypothesis
-settings.register_profile("default", deadline=None)
+settings.register_profile(
+    "default",
+    deadline=None,
+    suppress_health_check=(HealthCheck.function_scoped_fixture,))
 settings.load_profile("default")
 
 
@@ -83,6 +88,34 @@ def _out_quorum():
             os.kill(pid, signal.SIGCONT)
 
 
+@pytest.fixture(scope="session")
+def event_loop():
+    """Run the event_loop in the session scope."""
+    old_loop = asyncio.get_event_loop()
+    new_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(new_loop)
+    yield new_loop
+    asyncio.set_event_loop(old_loop)
+
+
+class EtcdClientCoroutineWrapper():
+    """Wrapper to use async/await keywords for etcd3.client without asyncio."""
+
+    def __init__(self, client):
+        self.client = client
+
+    def __getattr__(self, attr):
+        client_attr = self.client.__getattribute__(attr)
+        if inspect.iscoroutinefunction(client_attr):
+            return client_attr
+        elif callable(client_attr):
+            async def wrapper(*args, **kwargs):
+                return client_attr(*args, **kwargs)
+            return wrapper
+        return client_attr
+
+
+@pytest.mark.asyncio
 class TestEtcd3(object):
 
     class MockedException(grpc.RpcError):
@@ -93,18 +126,42 @@ class TestEtcd3(object):
             return self._code
 
     @pytest.fixture
-    def etcd(self):
+    async def etcd(self, request):
+        """Fixture that provide an etcd client instance.
+
+        It can be parametrized to choose the client type:
+        `client` or `aioclient`.
+        """
+        test_function = request.function
+        if hasattr(request.function, 'hypothesis'):
+            test_function = request.function.hypothesis.inner_test
+
+        coroutine_test = inspect.iscoroutinefunction(test_function)
+        client_type = "client"
+        if hasattr(request, 'param'):
+            client_type = request.param
+
+        client_params = {}
         endpoint = os.environ.get('PYTHON_ETCD_HTTP_URL')
         timeout = 5
+
         if endpoint:
             url = urlparse(endpoint)
-            with etcd3.client(host=url.hostname,
-                              port=url.port,
-                              timeout=timeout) as client:
+            client_params = {
+                'host': url.hostname,
+                'port': url.port,
+                'timeout': timeout,
+            }
+
+        if client_type == "client" and coroutine_test:
+            with etcd3.client(**client_params) as client:
+                yield EtcdClientCoroutineWrapper(client)
+        elif client_type == "client":
+            with etcd3.client(**client_params) as client:
                 yield client
-        else:
-            with etcd3.client() as client:
-                yield client
+        elif client_type == "aioclient":
+            client = await etcd3.aioclient(**client_params)
+            yield client
 
         @retry(wait=wait_fixed(2), stop=stop_after_attempt(3))
         def delete_keys_definitely():
@@ -115,37 +172,42 @@ class TestEtcd3(object):
 
         delete_keys_definitely()
 
-    def test_get_unknown_key(self, etcd):
-        value, meta = etcd.get('probably-invalid-key')
+    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
+    async def test_get_unknown_key(self, etcd):
+        value, meta = await etcd.get('probably-invalid-key')
         assert value is None
         assert meta is None
 
+    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
     @given(characters(blacklist_categories=['Cs', 'Cc']))
-    def test_get_key(self, etcd, string):
+    async def test_get_key(self, etcd, string):
         etcdctl('put', '/doot/a_key', string)
-        returned, _ = etcd.get('/doot/a_key')
+        returned, _ = await etcd.get('/doot/a_key')
         assert returned == string.encode('utf-8')
 
+    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
     @given(characters(blacklist_categories=['Cs', 'Cc']))
-    def test_get_random_key(self, etcd, string):
+    async def test_get_random_key(self, etcd, string):
         etcdctl('put', '/doot/' + string, 'dootdoot')
-        returned, _ = etcd.get('/doot/' + string)
+        returned, _ = await etcd.get('/doot/' + string)
         assert returned == b'dootdoot'
 
+    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
     @given(
         characters(blacklist_categories=['Cs', 'Cc']),
         characters(blacklist_categories=['Cs', 'Cc']),
     )
-    def test_get_key_serializable(self, etcd, key, string):
+    async def test_get_key_serializable(self, etcd, key, string):
         etcdctl('put', '/doot/' + key, string)
         with _out_quorum():
-            returned, _ = etcd.get('/doot/' + key, serializable=True)
+            returned, _ = await etcd.get('/doot/' + key, serializable=True)
         assert returned == string.encode('utf-8')
 
+    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
     @given(characters(blacklist_categories=['Cs', 'Cc']))
-    def test_get_have_cluster_revision(self, etcd, string):
+    async def test_get_have_cluster_revision(self, etcd, string):
         etcdctl('put', '/doot/' + string, 'dootdoot')
-        _, md = etcd.get('/doot/' + string)
+        _, md = await etcd.get('/doot/' + string)
         assert md.response_header.revision > 0
 
     @given(characters(blacklist_categories=['Cs', 'Cc']))

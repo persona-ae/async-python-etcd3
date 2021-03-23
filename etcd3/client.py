@@ -15,21 +15,13 @@ import etcd3.members
 import etcd3.transactions as transactions
 import etcd3.utils as utils
 import etcd3.watch as watch
-
-_EXCEPTIONS_BY_CODE = {
-    grpc.StatusCode.INTERNAL: exceptions.InternalServerError,
-    grpc.StatusCode.UNAVAILABLE: exceptions.ConnectionFailedError,
-    grpc.StatusCode.DEADLINE_EXCEEDED: exceptions.ConnectionTimeoutError,
-    grpc.StatusCode.FAILED_PRECONDITION: exceptions.PreconditionFailedError,
-}
-
-
-def _translate_exception(exc):
-    code = exc.code()
-    exception = _EXCEPTIONS_BY_CODE.get(code)
-    if exception is None:
-        raise
-    raise exception
+from etcd3.baseclient import (
+    Etcd3BaseClient,
+    EtcdTokenCallCredentials,
+    KVMetadata,
+    Transactions,
+    _translate_exception,
+)
 
 
 def _handle_errors(f):
@@ -50,29 +42,6 @@ def _handle_errors(f):
     return functools.wraps(f)(handler)
 
 
-class Transactions(object):
-    def __init__(self):
-        self.value = transactions.Value
-        self.version = transactions.Version
-        self.create = transactions.Create
-        self.mod = transactions.Mod
-
-        self.put = transactions.Put
-        self.get = transactions.Get
-        self.delete = transactions.Delete
-        self.txn = transactions.Txn
-
-
-class KVMetadata(object):
-    def __init__(self, keyvalue, header):
-        self.key = keyvalue.key
-        self.create_revision = keyvalue.create_revision
-        self.mod_revision = keyvalue.mod_revision
-        self.version = keyvalue.version
-        self.lease_id = keyvalue.lease
-        self.response_header = header
-
-
 class Status(object):
     def __init__(self, version, db_size, leader, raft_index, raft_term):
         self.version = version
@@ -88,21 +57,10 @@ class Alarm(object):
         self.member_id = member_id
 
 
-class EtcdTokenCallCredentials(grpc.AuthMetadataPlugin):
-    """Metadata wrapper for raw access token credentials."""
-
-    def __init__(self, access_token):
-        self._access_token = access_token
-
-    def __call__(self, context, callback):
-        metadata = (('token', self._access_token),)
-        callback(metadata, None)
-
-
-class Etcd3Client(object):
+class Etcd3Client(Etcd3BaseClient):
     def __init__(self, host='localhost', port=2379,
                  ca_cert=None, cert_key=None, cert_cert=None, timeout=None,
-                 user=None, password=None, grpc_options=None):
+                 grpc_options=None):
 
         self._url = '{host}:{port}'.format(host=host, port=port)
         self.metadata = None
@@ -136,26 +94,6 @@ class Etcd3Client(object):
         self.timeout = timeout
         self.call_credentials = None
 
-        cred_params = [c is not None for c in (user, password)]
-
-        if all(cred_params):
-            self.auth_stub = etcdrpc.AuthStub(self.channel)
-            auth_request = etcdrpc.AuthenticateRequest(
-                name=user,
-                password=password
-            )
-
-            resp = self.auth_stub.Authenticate(auth_request, self.timeout)
-            self.metadata = (('token', resp.token),)
-            self.call_credentials = grpc.metadata_call_credentials(
-                EtcdTokenCallCredentials(resp.token))
-
-        elif any(cred_params):
-            raise Exception(
-                'if using authentication credentials both user and password '
-                'must be specified.'
-            )
-
         self.kvstub = etcdrpc.KVStub(self.channel)
         self.watcher = watch.Watcher(
             etcdrpc.WatchStub(self.channel),
@@ -168,83 +106,24 @@ class Etcd3Client(object):
         self.maintenancestub = etcdrpc.MaintenanceStub(self.channel)
         self.transactions = Transactions()
 
-    def close(self):
-        """Call the GRPC channel close semantics."""
-        if hasattr(self, 'channel'):
-            self.channel.close()
-
     def __enter__(self):
         return self
 
     def __exit__(self, *args):
         self.close()
 
-    def _get_secure_creds(self, ca_cert, cert_key=None, cert_cert=None):
-        cert_key_file = None
-        cert_cert_file = None
-
-        with open(ca_cert, 'rb') as f:
-            ca_cert_file = f.read()
-
-        if cert_key is not None:
-            with open(cert_key, 'rb') as f:
-                cert_key_file = f.read()
-
-        if cert_cert is not None:
-            with open(cert_cert, 'rb') as f:
-                cert_cert_file = f.read()
-
-        return grpc.ssl_channel_credentials(
-            ca_cert_file,
-            cert_key_file,
-            cert_cert_file
+    @_handle_errors
+    def authenticate(self, user, password):
+        self.auth_stub = etcdrpc.AuthStub(self.channel)
+        auth_request = etcdrpc.AuthenticateRequest(
+            name=user,
+            password=password
         )
 
-    def _build_get_range_request(self, key,
-                                 range_end=None,
-                                 limit=None,
-                                 revision=None,
-                                 sort_order=None,
-                                 sort_target='key',
-                                 serializable=False,
-                                 keys_only=False,
-                                 count_only=None,
-                                 min_mod_revision=None,
-                                 max_mod_revision=None,
-                                 min_create_revision=None,
-                                 max_create_revision=None):
-        range_request = etcdrpc.RangeRequest()
-        range_request.key = utils.to_bytes(key)
-        range_request.keys_only = keys_only
-        if range_end is not None:
-            range_request.range_end = utils.to_bytes(range_end)
-
-        if sort_order is None:
-            range_request.sort_order = etcdrpc.RangeRequest.NONE
-        elif sort_order == 'ascend':
-            range_request.sort_order = etcdrpc.RangeRequest.ASCEND
-        elif sort_order == 'descend':
-            range_request.sort_order = etcdrpc.RangeRequest.DESCEND
-        else:
-            raise ValueError('unknown sort order: "{}"'.format(sort_order))
-
-        if sort_target is None or sort_target == 'key':
-            range_request.sort_target = etcdrpc.RangeRequest.KEY
-        elif sort_target == 'version':
-            range_request.sort_target = etcdrpc.RangeRequest.VERSION
-        elif sort_target == 'create':
-            range_request.sort_target = etcdrpc.RangeRequest.CREATE
-        elif sort_target == 'mod':
-            range_request.sort_target = etcdrpc.RangeRequest.MOD
-        elif sort_target == 'value':
-            range_request.sort_target = etcdrpc.RangeRequest.VALUE
-        else:
-            raise ValueError('sort_target must be one of "key", '
-                             '"version", "create", "mod" or "value"')
-
-        range_request.serializable = serializable
-
-        return range_request
+        resp = self.auth_stub.Authenticate(auth_request, self.timeout)
+        self.metadata = (('token', resp.token),)
+        self.call_credentials = grpc.metadata_call_credentials(
+            EtcdTokenCallCredentials(resp.token))
 
     @_handle_errors
     def get_response(self, key, serializable=False):
@@ -1175,12 +1054,21 @@ def client(host='localhost', port=2379,
            ca_cert=None, cert_key=None, cert_cert=None, timeout=None,
            user=None, password=None, grpc_options=None):
     """Return an instance of an Etcd3Client."""
-    return Etcd3Client(host=host,
-                       port=port,
-                       ca_cert=ca_cert,
-                       cert_key=cert_key,
-                       cert_cert=cert_cert,
-                       timeout=timeout,
-                       user=user,
-                       password=password,
-                       grpc_options=grpc_options)
+    client = Etcd3Client(host=host,
+                         port=port,
+                         ca_cert=ca_cert,
+                         cert_key=cert_key,
+                         cert_cert=cert_cert,
+                         timeout=timeout,
+                         grpc_options=grpc_options)
+
+    cred_params = [c is not None for c in (user, password)]
+    if all(cred_params):
+        client.authenticate(user, password)
+    elif any(cred_params):
+        raise Exception(
+            'if using authentication credentials both user and password '
+            'must be specified.'
+        )
+
+    return client
