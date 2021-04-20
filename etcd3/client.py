@@ -262,15 +262,6 @@ class Etcd3Client(Etcd3BaseClient):
         for kv in range_response.kvs:
             yield (kv.value, KVMetadata(kv, range_response.header))
 
-    def _build_put_request(self, key, value, lease=None, prev_kv=False):
-        put_request = etcdrpc.PutRequest()
-        put_request.key = utils.to_bytes(key)
-        put_request.value = utils.to_bytes(value)
-        put_request.lease = utils.lease_to_id(lease)
-        put_request.prev_kv = prev_kv
-
-        return put_request
-
     @_handle_errors
     def put(self, key, value, lease=None, prev_kv=False):
         """
@@ -353,18 +344,6 @@ class Etcd3Client(Etcd3BaseClient):
         )
 
         return status
-
-    def _build_delete_request(self, key,
-                              range_end=None,
-                              prev_kv=False):
-        delete_request = etcdrpc.DeleteRangeRequest()
-        delete_request.key = utils.to_bytes(key)
-        delete_request.prev_kv = prev_kv
-
-        if range_end is not None:
-            delete_request.range_end = utils.to_bytes(range_end)
-
-        return delete_request
 
     @_handle_errors
     def delete(self, key, prev_kv=False, return_response=False):

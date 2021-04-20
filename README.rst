@@ -104,9 +104,20 @@ Basic usage:
 
 Asyncio usage:
 
+Asyncio support is recent and is still experimental.
+
 .. code-block:: python
 
     import etcd3
 
     etcd = await etcd3.aioclient()
+
     foo = await etcd.get('foo')
+
+    foo_values = await etcd.get_prefix('foo')
+    for value, _ in foo_values:
+        print(value)
+
+    await etcd.put('bar', 'doot')
+    await etcd.delete('bar')
+    await etcd.delete_prefix('foo')

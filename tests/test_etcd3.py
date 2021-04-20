@@ -210,22 +210,25 @@ class TestEtcd3(object):
         _, md = await etcd.get('/doot/' + string)
         assert md.response_header.revision > 0
 
+    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
     @given(characters(blacklist_categories=['Cs', 'Cc']))
-    def test_put_key(self, etcd, string):
-        etcd.put('/doot/put_1', string)
+    async def test_put_key(self, etcd, string):
+        await etcd.put('/doot/put_1', string)
         out = etcdctl('get', '/doot/put_1')
         assert base64.b64decode(out['kvs'][0]['value']) == \
             string.encode('utf-8')
 
+    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
     @given(characters(blacklist_categories=['Cs', 'Cc']))
-    def test_put_has_cluster_revision(self, etcd, string):
-        response = etcd.put('/doot/put_1', string)
+    async def test_put_has_cluster_revision(self, etcd, string):
+        response = await etcd.put('/doot/put_1', string)
         assert response.header.revision > 0
 
+    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
     @given(characters(blacklist_categories=['Cs', 'Cc']))
-    def test_put_has_prev_kv(self, etcd, string):
+    async def test_put_has_prev_kv(self, etcd, string):
         etcdctl('put', '/doot/put_1', 'old_value')
-        response = etcd.put('/doot/put_1', string, prev_kv=True)
+        response = await etcd.put('/doot/put_1', string, prev_kv=True)
         assert response.prev_kv.value == b'old_value'
 
     @given(characters(blacklist_categories=['Cs', 'Cc']))
@@ -238,51 +241,55 @@ class TestEtcd3(object):
 
         etcdctl('del', '/doot/put_1')
 
-    def test_delete_key(self, etcd):
+    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
+    async def test_delete_key(self, etcd):
         etcdctl('put', '/doot/delete_this', 'delete pls')
 
-        v, _ = etcd.get('/doot/delete_this')
+        v, _ = await etcd.get('/doot/delete_this')
         assert v == b'delete pls'
 
-        deleted = etcd.delete('/doot/delete_this')
+        deleted = await etcd.delete('/doot/delete_this')
         assert deleted is True
 
-        deleted = etcd.delete('/doot/delete_this')
+        deleted = await etcd.delete('/doot/delete_this')
         assert deleted is False
 
-        deleted = etcd.delete('/doot/not_here_dude')
+        deleted = await etcd.delete('/doot/not_here_dude')
         assert deleted is False
 
-        v, _ = etcd.get('/doot/delete_this')
+        v, _ = await etcd.get('/doot/delete_this')
         assert v is None
 
-    def test_delete_has_cluster_revision(self, etcd):
-        response = etcd.delete('/doot/delete_this', return_response=True)
+    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
+    async def test_delete_has_cluster_revision(self, etcd):
+        response = await etcd.delete('/doot/delete_this', return_response=True)
         assert response.header.revision > 0
 
-    def test_delete_has_prev_kv(self, etcd):
+    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
+    async def test_delete_has_prev_kv(self, etcd):
         etcdctl('put', '/doot/delete_this', 'old_value')
-        response = etcd.delete('/doot/delete_this', prev_kv=True,
+        response = await etcd.delete('/doot/delete_this', prev_kv=True,
                                return_response=True)
         assert response.prev_kvs[0].value == b'old_value'
 
-    def test_delete_keys_with_prefix(self, etcd):
+    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
+    async def test_delete_keys_with_prefix(self, etcd):
         etcdctl('put', '/foo/1', 'bar')
         etcdctl('put', '/foo/2', 'baz')
 
-        v, _ = etcd.get('/foo/1')
+        v, _ = await etcd.get('/foo/1')
         assert v == b'bar'
 
-        v, _ = etcd.get('/foo/2')
+        v, _ = await etcd.get('/foo/2')
         assert v == b'baz'
 
-        response = etcd.delete_prefix('/foo')
+        response = await etcd.delete_prefix('/foo')
         assert response.deleted == 2
 
-        v, _ = etcd.get('/foo/1')
+        v, _ = await etcd.get('/foo/1')
         assert v is None
 
-        v, _ = etcd.get('/foo/2')
+        v, _ = await etcd.get('/foo/2')
         assert v is None
 
     def test_new_watch_error(self, etcd):
@@ -639,44 +646,48 @@ class TestEtcd3(object):
         assert v == b'boot'
         assert status is False
 
-    def test_get_prefix(self, etcd):
+    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
+    async def test_get_prefix(self, etcd):
         for i in range(20):
             etcdctl('put', '/doot/range{}'.format(i), 'i am a range')
 
         for i in range(5):
             etcdctl('put', '/doot/notrange{}'.format(i), 'i am a not range')
 
-        values = list(etcd.get_prefix('/doot/range'))
+        values = list(await etcd.get_prefix('/doot/range'))
         assert len(values) == 20
         for value, _ in values:
             assert value == b'i am a range'
 
-    def test_get_prefix_keys_only(self, etcd):
+    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
+    async def test_get_prefix_keys_only(self, etcd):
         for i in range(20):
             etcdctl('put', '/doot/range{}'.format(i), 'i am a range')
 
         for i in range(5):
             etcdctl('put', '/doot/notrange{}'.format(i), 'i am a not range')
 
-        values = list(etcd.get_prefix('/doot/range', keys_only=True))
+        values = list(await etcd.get_prefix('/doot/range', keys_only=True))
         assert len(values) == 20
         for value, meta in values:
             assert meta.key.startswith(b"/doot/range")
             assert not value
 
-    def test_get_prefix_serializable(self, etcd):
+    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
+    async def test_get_prefix_serializable(self, etcd):
         for i in range(20):
             etcdctl('put', '/doot/range{}'.format(i), 'i am a range')
 
         with _out_quorum():
-            values = list(etcd.get_prefix(
+            values = list(await etcd.get_prefix(
                 '/doot/range', keys_only=True, serializable=True))
 
         assert len(values) == 20
 
-    def test_get_prefix_error_handling(self, etcd):
+    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
+    async def test_get_prefix_error_handling(self, etcd):
         with pytest.raises(TypeError, match="Don't use "):
-            etcd.get_prefix('a_prefix', range_end='end')
+            await etcd.get_prefix('a_prefix', range_end='end')
 
     def test_get_range(self, etcd):
         for char in string.ascii_lowercase:
@@ -694,11 +705,12 @@ class TestEtcd3(object):
         result = list(etcd.get_all())
         assert not result
 
-    def test_range_not_found_error(self, etcd):
+    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
+    async def test_range_not_found_error(self, etcd):
         for i in range(5):
             etcdctl('put', '/doot/notrange{}'.format(i), 'i am a not range')
 
-        result = list(etcd.get_prefix('/doot/range'))
+        result = list(await etcd.get_prefix('/doot/range'))
         assert not result
 
     def test_get_all(self, etcd):
@@ -724,7 +736,8 @@ class TestEtcd3(object):
             assert meta.key.startswith(b"/doot/")
             assert not value
 
-    def test_sort_order(self, etcd):
+    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
+    async def test_sort_order(self, etcd):
         def remove_prefix(string, prefix):
             return string[len(prefix):]
 
@@ -735,13 +748,13 @@ class TestEtcd3(object):
             etcdctl('put', '/doot/{}'.format(k), v)
 
         keys = ''
-        for value, meta in etcd.get_prefix('/doot', sort_order='ascend'):
+        for value, meta in await etcd.get_prefix('/doot', sort_order='ascend'):
             keys += remove_prefix(meta.key.decode('utf-8'), '/doot/')
 
         assert keys == initial_keys
 
         reverse_keys = ''
-        for value, meta in etcd.get_prefix('/doot', sort_order='descend'):
+        for value, meta in await etcd.get_prefix('/doot', sort_order='descend'):
             reverse_keys += remove_prefix(meta.key.decode('utf-8'), '/doot/')
 
         assert reverse_keys == ''.join(reversed(initial_keys))

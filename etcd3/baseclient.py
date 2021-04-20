@@ -130,3 +130,24 @@ class Etcd3BaseClient(object):
         range_request.serializable = serializable
 
         return range_request
+
+    def _build_put_request(self, key, value, lease=None, prev_kv=False):
+        put_request = etcdrpc.PutRequest()
+        put_request.key = utils.to_bytes(key)
+        put_request.value = utils.to_bytes(value)
+        put_request.lease = utils.lease_to_id(lease)
+        put_request.prev_kv = prev_kv
+
+        return put_request
+
+    def _build_delete_request(self, key,
+                              range_end=None,
+                              prev_kv=False):
+        delete_request = etcdrpc.DeleteRangeRequest()
+        delete_request.key = utils.to_bytes(key)
+        delete_request.prev_kv = prev_kv
+
+        if range_end is not None:
+            delete_request.range_end = utils.to_bytes(range_end)
+
+        return delete_request
