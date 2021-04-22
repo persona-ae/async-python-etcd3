@@ -4,10 +4,8 @@ Tests for `etcd3` module.
 ----------------------------------
 """
 
-import asyncio
 import base64
 import contextlib
-import inspect
 import json
 import os
 import signal
@@ -19,7 +17,7 @@ import time
 
 import grpc
 
-from hypothesis import given, settings, HealthCheck
+from hypothesis import HealthCheck, given, settings
 from hypothesis.strategies import characters
 
 import mock
@@ -88,33 +86,6 @@ def _out_quorum():
             os.kill(pid, signal.SIGCONT)
 
 
-@pytest.fixture(scope="session")
-def event_loop():
-    """Run the event_loop in the session scope."""
-    old_loop = asyncio.get_event_loop()
-    new_loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(new_loop)
-    yield new_loop
-    asyncio.set_event_loop(old_loop)
-
-
-class EtcdClientCoroutineWrapper():
-    """Wrapper to use async/await keywords for etcd3.client without asyncio."""
-
-    def __init__(self, client):
-        self.client = client
-
-    def __getattr__(self, attr):
-        client_attr = self.client.__getattribute__(attr)
-        if inspect.iscoroutinefunction(client_attr):
-            return client_attr
-        elif callable(client_attr):
-            async def wrapper(*args, **kwargs):
-                return client_attr(*args, **kwargs)
-            return wrapper
-        return client_attr
-
-
 @pytest.mark.asyncio
 class TestEtcd3(object):
 
@@ -126,21 +97,8 @@ class TestEtcd3(object):
             return self._code
 
     @pytest.fixture
-    async def etcd(self, request):
-        """Fixture that provide an etcd client instance.
-
-        It can be parametrized to choose the client type:
-        `client` or `aioclient`.
-        """
-        test_function = request.function
-        if hasattr(request.function, 'hypothesis'):
-            test_function = request.function.hypothesis.inner_test
-
-        coroutine_test = inspect.iscoroutinefunction(test_function)
-        client_type = "client"
-        if hasattr(request, 'param'):
-            client_type = request.param
-
+    def etcd(self, request):
+        """Fixture that provide an etcd client instance."""
         client_params = {}
         endpoint = os.environ.get('PYTHON_ETCD_HTTP_URL')
         timeout = 5
@@ -153,14 +111,7 @@ class TestEtcd3(object):
                 'timeout': timeout,
             }
 
-        if client_type == "client" and coroutine_test:
-            with etcd3.client(**client_params) as client:
-                yield EtcdClientCoroutineWrapper(client)
-        elif client_type == "client":
-            with etcd3.client(**client_params) as client:
-                yield client
-        elif client_type == "aioclient":
-            client = await etcd3.aioclient(**client_params)
+        with etcd3.client(**client_params) as client:
             yield client
 
         @retry(wait=wait_fixed(2), stop=stop_after_attempt(3))
@@ -172,63 +123,55 @@ class TestEtcd3(object):
 
         delete_keys_definitely()
 
-    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
-    async def test_get_unknown_key(self, etcd):
-        value, meta = await etcd.get('probably-invalid-key')
+    def test_get_unknown_key(self, etcd):
+        value, meta = etcd.get('probably-invalid-key')
         assert value is None
         assert meta is None
 
-    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
     @given(characters(blacklist_categories=['Cs', 'Cc']))
-    async def test_get_key(self, etcd, string):
+    def test_get_key(self, etcd, string):
         etcdctl('put', '/doot/a_key', string)
-        returned, _ = await etcd.get('/doot/a_key')
+        returned, _ = etcd.get('/doot/a_key')
         assert returned == string.encode('utf-8')
 
-    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
     @given(characters(blacklist_categories=['Cs', 'Cc']))
-    async def test_get_random_key(self, etcd, string):
+    def test_get_random_key(self, etcd, string):
         etcdctl('put', '/doot/' + string, 'dootdoot')
-        returned, _ = await etcd.get('/doot/' + string)
+        returned, _ = etcd.get('/doot/' + string)
         assert returned == b'dootdoot'
 
-    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
     @given(
         characters(blacklist_categories=['Cs', 'Cc']),
         characters(blacklist_categories=['Cs', 'Cc']),
     )
-    async def test_get_key_serializable(self, etcd, key, string):
+    def test_get_key_serializable(self, etcd, key, string):
         etcdctl('put', '/doot/' + key, string)
         with _out_quorum():
-            returned, _ = await etcd.get('/doot/' + key, serializable=True)
+            returned, _ = etcd.get('/doot/' + key, serializable=True)
         assert returned == string.encode('utf-8')
 
-    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
     @given(characters(blacklist_categories=['Cs', 'Cc']))
-    async def test_get_have_cluster_revision(self, etcd, string):
+    def test_get_have_cluster_revision(self, etcd, string):
         etcdctl('put', '/doot/' + string, 'dootdoot')
-        _, md = await etcd.get('/doot/' + string)
+        _, md = etcd.get('/doot/' + string)
         assert md.response_header.revision > 0
 
-    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
     @given(characters(blacklist_categories=['Cs', 'Cc']))
-    async def test_put_key(self, etcd, string):
-        await etcd.put('/doot/put_1', string)
+    def test_put_key(self, etcd, string):
+        etcd.put('/doot/put_1', string)
         out = etcdctl('get', '/doot/put_1')
         assert base64.b64decode(out['kvs'][0]['value']) == \
             string.encode('utf-8')
 
-    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
     @given(characters(blacklist_categories=['Cs', 'Cc']))
-    async def test_put_has_cluster_revision(self, etcd, string):
-        response = await etcd.put('/doot/put_1', string)
+    def test_put_has_cluster_revision(self, etcd, string):
+        response = etcd.put('/doot/put_1', string)
         assert response.header.revision > 0
 
-    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
     @given(characters(blacklist_categories=['Cs', 'Cc']))
-    async def test_put_has_prev_kv(self, etcd, string):
+    def test_put_has_prev_kv(self, etcd, string):
         etcdctl('put', '/doot/put_1', 'old_value')
-        response = await etcd.put('/doot/put_1', string, prev_kv=True)
+        response = etcd.put('/doot/put_1', string, prev_kv=True)
         assert response.prev_kv.value == b'old_value'
 
     @given(characters(blacklist_categories=['Cs', 'Cc']))
@@ -241,55 +184,51 @@ class TestEtcd3(object):
 
         etcdctl('del', '/doot/put_1')
 
-    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
-    async def test_delete_key(self, etcd):
+    def test_delete_key(self, etcd):
         etcdctl('put', '/doot/delete_this', 'delete pls')
 
-        v, _ = await etcd.get('/doot/delete_this')
+        v, _ = etcd.get('/doot/delete_this')
         assert v == b'delete pls'
 
-        deleted = await etcd.delete('/doot/delete_this')
+        deleted = etcd.delete('/doot/delete_this')
         assert deleted is True
 
-        deleted = await etcd.delete('/doot/delete_this')
+        deleted = etcd.delete('/doot/delete_this')
         assert deleted is False
 
-        deleted = await etcd.delete('/doot/not_here_dude')
+        deleted = etcd.delete('/doot/not_here_dude')
         assert deleted is False
 
-        v, _ = await etcd.get('/doot/delete_this')
+        v, _ = etcd.get('/doot/delete_this')
         assert v is None
 
-    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
-    async def test_delete_has_cluster_revision(self, etcd):
-        response = await etcd.delete('/doot/delete_this', return_response=True)
+    def test_delete_has_cluster_revision(self, etcd):
+        response = etcd.delete('/doot/delete_this', return_response=True)
         assert response.header.revision > 0
 
-    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
-    async def test_delete_has_prev_kv(self, etcd):
+    def test_delete_has_prev_kv(self, etcd):
         etcdctl('put', '/doot/delete_this', 'old_value')
-        response = await etcd.delete('/doot/delete_this', prev_kv=True,
+        response = etcd.delete('/doot/delete_this', prev_kv=True,
                                return_response=True)
         assert response.prev_kvs[0].value == b'old_value'
 
-    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
-    async def test_delete_keys_with_prefix(self, etcd):
+    def test_delete_keys_with_prefix(self, etcd):
         etcdctl('put', '/foo/1', 'bar')
         etcdctl('put', '/foo/2', 'baz')
 
-        v, _ = await etcd.get('/foo/1')
+        v, _ = etcd.get('/foo/1')
         assert v == b'bar'
 
-        v, _ = await etcd.get('/foo/2')
+        v, _ = etcd.get('/foo/2')
         assert v == b'baz'
 
-        response = await etcd.delete_prefix('/foo')
+        response = etcd.delete_prefix('/foo')
         assert response.deleted == 2
 
-        v, _ = await etcd.get('/foo/1')
+        v, _ = etcd.get('/foo/1')
         assert v is None
 
-        v, _ = await etcd.get('/foo/2')
+        v, _ = etcd.get('/foo/2')
         assert v is None
 
     def test_new_watch_error(self, etcd):
@@ -368,7 +307,7 @@ class TestEtcd3(object):
         t = threading.Thread(name="update_key", target=update_key)
         t.start()
 
-        def watch_compacted_revision_test():
+        def watch_compacted_revision_test(revision):
             events_iterator, cancel = etcd.watch(
                 b'/watchcompation', start_revision=1)
 
@@ -382,7 +321,7 @@ class TestEtcd3(object):
                 compacted_revision = err.compacted_revision
 
             assert error_raised is True
-            assert compacted_revision == 2
+            assert compacted_revision == revision
 
             change_count = 0
             events_iterator, cancel = etcd.watch(
@@ -400,9 +339,10 @@ class TestEtcd3(object):
                     cancel()
 
         # Compact etcd and test watcher
-        etcd.compact(2)
+        _, meta = etcd.get('/random')
+        etcd.compact(meta.mod_revision)
 
-        watch_compacted_revision_test()
+        watch_compacted_revision_test(meta.mod_revision)
 
         t.join()
 
@@ -646,48 +586,44 @@ class TestEtcd3(object):
         assert v == b'boot'
         assert status is False
 
-    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
-    async def test_get_prefix(self, etcd):
+    def test_get_prefix(self, etcd):
         for i in range(20):
             etcdctl('put', '/doot/range{}'.format(i), 'i am a range')
 
         for i in range(5):
             etcdctl('put', '/doot/notrange{}'.format(i), 'i am a not range')
 
-        values = list(await etcd.get_prefix('/doot/range'))
+        values = list(etcd.get_prefix('/doot/range'))
         assert len(values) == 20
         for value, _ in values:
             assert value == b'i am a range'
 
-    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
-    async def test_get_prefix_keys_only(self, etcd):
+    def test_get_prefix_keys_only(self, etcd):
         for i in range(20):
             etcdctl('put', '/doot/range{}'.format(i), 'i am a range')
 
         for i in range(5):
             etcdctl('put', '/doot/notrange{}'.format(i), 'i am a not range')
 
-        values = list(await etcd.get_prefix('/doot/range', keys_only=True))
+        values = list(etcd.get_prefix('/doot/range', keys_only=True))
         assert len(values) == 20
         for value, meta in values:
             assert meta.key.startswith(b"/doot/range")
             assert not value
 
-    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
-    async def test_get_prefix_serializable(self, etcd):
+    def test_get_prefix_serializable(self, etcd):
         for i in range(20):
             etcdctl('put', '/doot/range{}'.format(i), 'i am a range')
 
         with _out_quorum():
-            values = list(await etcd.get_prefix(
+            values = list(etcd.get_prefix(
                 '/doot/range', keys_only=True, serializable=True))
 
         assert len(values) == 20
 
-    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
-    async def test_get_prefix_error_handling(self, etcd):
+    def test_get_prefix_error_handling(self, etcd):
         with pytest.raises(TypeError, match="Don't use "):
-            await etcd.get_prefix('a_prefix', range_end='end')
+            etcd.get_prefix('a_prefix', range_end='end')
 
     def test_get_range(self, etcd):
         for char in string.ascii_lowercase:
@@ -705,12 +641,11 @@ class TestEtcd3(object):
         result = list(etcd.get_all())
         assert not result
 
-    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
-    async def test_range_not_found_error(self, etcd):
+    def test_range_not_found_error(self, etcd):
         for i in range(5):
             etcdctl('put', '/doot/notrange{}'.format(i), 'i am a not range')
 
-        result = list(await etcd.get_prefix('/doot/range'))
+        result = list(etcd.get_prefix('/doot/range'))
         assert not result
 
     def test_get_all(self, etcd):
@@ -736,8 +671,7 @@ class TestEtcd3(object):
             assert meta.key.startswith(b"/doot/")
             assert not value
 
-    @pytest.mark.parametrize('etcd', ['client', 'aioclient'], indirect=True)
-    async def test_sort_order(self, etcd):
+    def test_sort_order(self, etcd):
         def remove_prefix(string, prefix):
             return string[len(prefix):]
 
@@ -748,13 +682,13 @@ class TestEtcd3(object):
             etcdctl('put', '/doot/{}'.format(k), v)
 
         keys = ''
-        for value, meta in await etcd.get_prefix('/doot', sort_order='ascend'):
+        for value, meta in etcd.get_prefix('/doot', sort_order='ascend'):
             keys += remove_prefix(meta.key.decode('utf-8'), '/doot/')
 
         assert keys == initial_keys
 
         reverse_keys = ''
-        for value, meta in await etcd.get_prefix('/doot', sort_order='descend'):
+        for value, meta in etcd.get_prefix('/doot', sort_order='descend'):
             reverse_keys += remove_prefix(meta.key.decode('utf-8'), '/doot/')
 
         assert reverse_keys == ''.join(reversed(initial_keys))
@@ -1146,9 +1080,12 @@ class TestClient(object):
                 cert_cert='tests/client.crt')
 
     def test_compact(self, etcd):
-        etcd.compact(3)
+        etcdctl('put', '/random', '1')  # Some data to compact
+        _, meta = etcd.get('/random')
+
+        etcd.compact(meta.mod_revision)
         with pytest.raises(grpc.RpcError):
-            etcd.compact(3)
+            etcd.compact(meta.mod_revision)
 
     def test_channel_with_no_cert(self):
         client = etcd3.client(

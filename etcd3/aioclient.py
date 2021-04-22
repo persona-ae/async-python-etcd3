@@ -1,5 +1,4 @@
-import functools
-import inspect
+import asyncio
 
 import grpc
 import grpc._channel
@@ -7,33 +6,13 @@ import grpc._channel
 import etcd3.etcdrpc as etcdrpc
 import etcd3.utils as utils
 import etcd3.watch as watch
-import etcd3.watch as watch
-
 from etcd3.baseclient import (
     Etcd3BaseClient,
     EtcdTokenCallCredentials,
     KVMetadata,
     Transactions,
-    _translate_exception,
+    _handle_errors,
 )
-
-
-def _handle_errors(f):
-    if inspect.isgeneratorfunction(f):
-        async def handler(*args, **kwargs):
-            try:
-                async for data in f(*args, **kwargs):
-                    yield data
-            except grpc.aio.AioRpcError as exc:
-                _translate_exception(exc)
-    else:
-        async def handler(*args, **kwargs):
-            try:
-                return await f(*args, **kwargs)
-            except grpc.aio.AioRpcError as exc:
-                _translate_exception(exc)
-
-    return functools.wraps(f)(handler)
 
 
 class Etcd3AioClient(Etcd3BaseClient):
@@ -73,7 +52,7 @@ class Etcd3AioClient(Etcd3BaseClient):
         self.call_credentials = None
 
         self.kvstub = etcdrpc.KVStub(self.channel)
-        self.watcher = watch.Watcher(
+        self.watcher = watch.AioWatcher(
             etcdrpc.WatchStub(self.channel),
             timeout=self.timeout,
             call_credentials=self.call_credentials,
@@ -246,6 +225,163 @@ class Etcd3AioClient(Etcd3BaseClient):
         )
         return await self.kvstub.DeleteRange(
             delete_request,
+            timeout=self.timeout,
+            credentials=self.call_credentials,
+            metadata=self.metadata
+        )
+
+    @_handle_errors
+    async def watch_response(self, key, **kwargs):
+        """
+        Watch a key.
+
+        Example usage:
+
+        .. code-block:: python
+            responses_iterator, cancel = etcd.watch_response('/doot/key')
+            for response in responses_iterator:
+                print(response)
+
+        :param key: key to watch
+
+        :returns: tuple of ``responses_iterator`` and ``cancel``.
+                  Use ``responses_iterator`` to get the watch responses,
+                  each of which contains a header and a list of events.
+                  Use ``cancel`` to cancel the watch request.
+        """
+        response_queue = asyncio.Queue()
+        canceled = asyncio.Event()
+
+        async def callback(response):
+            await response_queue.put(response)
+
+        watch_id = await self.add_watch_callback(key, callback, **kwargs)
+
+        async def cancel():
+            canceled.set()
+            await response_queue.put(None)
+            await self.cancel_watch(watch_id)
+
+        @_handle_errors
+        async def iterator():
+            while not canceled.is_set():
+                response = await response_queue.get()
+                if isinstance(response, Exception):
+                    raise response
+                if not canceled.is_set():
+                    yield response
+
+        return iterator(), cancel
+
+    async def watch(self, key, **kwargs):
+        """
+        Watch a key.
+
+        Example usage:
+
+        .. code-block:: python
+            events_iterator, cancel = etcd.watch('/doot/key')
+            for event in events_iterator:
+                print(event)
+
+        :param key: key to watch
+
+        :returns: tuple of ``events_iterator`` and ``cancel``.
+                  Use ``events_iterator`` to get the events of key changes
+                  and ``cancel`` to cancel the watch request.
+        """
+        response_iter, cancel = await self.watch_response(key, **kwargs)
+        return utils.response_to_async_event_iterator(response_iter), cancel
+
+    async def watch_prefix_response(self, key_prefix, **kwargs):
+        """
+        Watch a range of keys with a prefix.
+
+        :param key_prefix: prefix to watch
+
+        :returns: tuple of ``responses_iterator`` and ``cancel``.
+        """
+        kwargs['range_end'] = \
+            utils.prefix_range_end(utils.to_bytes(key_prefix))
+        return await self.watch_response(key_prefix, **kwargs)
+
+    async def watch_prefix(self, key_prefix, **kwargs):
+        """
+        Watch a range of keys with a prefix.
+
+        :param key_prefix: prefix to watch
+
+        :returns: tuple of ``events_iterator`` and ``cancel``.
+        """
+        kwargs['range_end'] = \
+            utils.prefix_range_end(utils.to_bytes(key_prefix))
+        return await self.watch(key_prefix, **kwargs)
+
+    @_handle_errors
+    async def add_watch_callback(self, *args, **kwargs):
+        """
+        Watch a key or range of keys and call a callback on every response.
+
+        If timeout was declared during the client initialization and
+        the watch cannot be created during that time the method raises
+        a ``WatchTimedOut`` exception.
+
+        :param key: key to watch
+        :param callback: callback function
+
+        :returns: watch_id. Later it could be used for cancelling watch.
+        """
+        # try:
+        return await self.watcher.add_callback(*args, **kwargs)
+        # except queue.Empty:
+        #     raise exceptions.WatchTimedOut()
+
+    @_handle_errors
+    async def add_watch_prefix_callback(self, key_prefix, callback, **kwargs):
+        """
+        Watch a prefix and call a callback on every response.
+
+        If timeout was declared during the client initialization and
+        the watch cannot be created during that time the method raises
+        a ``WatchTimedOut`` exception.
+
+        :param key_prefix: prefix to watch
+        :param callback: callback function
+
+        :returns: watch_id. Later it could be used for cancelling watch.
+        """
+        kwargs['range_end'] = \
+            utils.prefix_range_end(utils.to_bytes(key_prefix))
+
+        return await self.add_watch_callback(key_prefix, callback, **kwargs)
+
+    @_handle_errors
+    async def cancel_watch(self, watch_id):
+        """
+        Stop watching a key or range of keys.
+
+        :param watch_id: watch_id returned by ``add_watch_callback`` method
+        """
+        await self.watcher.cancel(watch_id)
+
+    @_handle_errors
+    async def compact(self, revision, physical=False):
+        """
+        Compact the event history in etcd up to a given revision.
+
+        All superseded keys with a revision less than the compaction revision
+        will be removed.
+
+        :param revision: revision for the compaction operation
+        :param physical: if set to True, the request will wait until the
+                         compaction is physically applied to the local database
+                         such that compacted entries are totally removed from
+                         the backend database
+        """
+        compact_request = etcdrpc.CompactionRequest(revision=revision,
+                                                    physical=physical)
+        return await self.kvstub.Compact(
+            compact_request,
             timeout=self.timeout,
             credentials=self.call_credentials,
             metadata=self.metadata

@@ -1,5 +1,3 @@
-import functools
-import inspect
 import threading
 
 import grpc
@@ -20,26 +18,8 @@ from etcd3.baseclient import (
     EtcdTokenCallCredentials,
     KVMetadata,
     Transactions,
-    _translate_exception,
+    _handle_errors,
 )
-
-
-def _handle_errors(f):
-    if inspect.isgeneratorfunction(f):
-        def handler(*args, **kwargs):
-            try:
-                for data in f(*args, **kwargs):
-                    yield data
-            except grpc.RpcError as exc:
-                _translate_exception(exc)
-    else:
-        def handler(*args, **kwargs):
-            try:
-                return f(*args, **kwargs)
-            except grpc.RpcError as exc:
-                _translate_exception(exc)
-
-    return functools.wraps(f)(handler)
 
 
 class Status(object):

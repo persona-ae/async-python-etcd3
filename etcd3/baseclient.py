@@ -1,3 +1,6 @@
+import functools
+import inspect
+
 import grpc
 import grpc._channel
 
@@ -21,6 +24,37 @@ def _translate_exception(exc):
     if exception is None:
         raise
     raise exception
+
+
+def _handle_errors(f):  # noqa: C901
+    if inspect.isasyncgenfunction(f):
+        async def handler(*args, **kwargs):
+            try:
+                async for data in f(*args, **kwargs):
+                    yield data
+            except grpc.RpcError as exc:
+                _translate_exception(exc)
+    elif inspect.iscoroutinefunction(f):
+        async def handler(*args, **kwargs):
+            try:
+                return await f(*args, **kwargs)
+            except grpc.RpcError as exc:
+                _translate_exception(exc)
+    elif inspect.isgeneratorfunction(f):
+        def handler(*args, **kwargs):
+            try:
+                for data in f(*args, **kwargs):
+                    yield data
+            except grpc.RpcError as exc:
+                _translate_exception(exc)
+    else:
+        def handler(*args, **kwargs):
+            try:
+                return f(*args, **kwargs)
+            except grpc.RpcError as exc:
+                _translate_exception(exc)
+
+    return functools.wraps(f)(handler)
 
 
 class Transactions(object):
