@@ -747,7 +747,13 @@ class Etcd3Client(Etcd3BaseClient):
 
     @_handle_errors
     def get_lease_info(self, lease_id):
-        # only available in etcd v3.1.0 and later
+        """
+        Retrieve lease information.
+
+        This request is only available in etcd v3.1.0 and later
+
+        :param lease_id: ID of the lease.
+        """
         ttl_request = etcdrpc.LeaseTimeToLiveRequest(ID=lease_id,
                                                      keys=True)
         return self.leasestub.LeaseTimeToLive(
