@@ -10,7 +10,6 @@ import etcd3.exceptions as exceptions
 import etcd3.leases as leases
 import etcd3.locks as locks
 import etcd3.members
-import etcd3.transactions as transactions
 import etcd3.utils as utils
 import etcd3.watch as watch
 from etcd3.baseclient import (
@@ -591,51 +590,12 @@ class Etcd3Client(Etcd3BaseClient):
         """
         self.watcher.cancel(watch_id)
 
-    def _ops_to_requests(self, ops):
-        """
-        Return a list of grpc requests.
-
-        Returns list from an input list of etcd3.transactions.{Put, Get,
-        Delete, Txn} objects.
-        """
-        request_ops = []
-        for op in ops:
-            if isinstance(op, transactions.Put):
-                request = self._build_put_request(op.key, op.value,
-                                                  op.lease, op.prev_kv)
-                request_op = etcdrpc.RequestOp(request_put=request)
-                request_ops.append(request_op)
-
-            elif isinstance(op, transactions.Get):
-                request = self._build_get_range_request(op.key, op.range_end)
-                request_op = etcdrpc.RequestOp(request_range=request)
-                request_ops.append(request_op)
-
-            elif isinstance(op, transactions.Delete):
-                request = self._build_delete_request(op.key, op.range_end,
-                                                     op.prev_kv)
-                request_op = etcdrpc.RequestOp(request_delete_range=request)
-                request_ops.append(request_op)
-
-            elif isinstance(op, transactions.Txn):
-                compare = [c.build_message() for c in op.compare]
-                success_ops = self._ops_to_requests(op.success)
-                failure_ops = self._ops_to_requests(op.failure)
-                request = etcdrpc.TxnRequest(compare=compare,
-                                             success=success_ops,
-                                             failure=failure_ops)
-                request_op = etcdrpc.RequestOp(request_txn=request)
-                request_ops.append(request_op)
-
-            else:
-                raise Exception(
-                    'Unknown request class {}'.format(op.__class__))
-        return request_ops
-
     @_handle_errors
     def transaction(self, compare, success=None, failure=None):
         """
         Perform a transaction.
+
+        Nested transactions are only available in etcd v3.3 and later.
 
         Example usage:
 
@@ -676,21 +636,7 @@ class Etcd3Client(Etcd3BaseClient):
             metadata=self.metadata
         )
 
-        responses = []
-        for response in txn_response.responses:
-            response_type = response.WhichOneof('response')
-            if response_type in ['response_put', 'response_delete_range',
-                                 'response_txn']:
-                responses.append(response)
-
-            elif response_type == 'response_range':
-                range_kvs = []
-                for kv in response.response_range.kvs:
-                    range_kvs.append((kv.value,
-                                      KVMetadata(kv, txn_response.header)))
-
-                responses.append(range_kvs)
-
+        responses = self._handle_transaction_responses(txn_response)
         return txn_response.succeeded, responses
 
     @_handle_errors

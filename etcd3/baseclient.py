@@ -185,3 +185,65 @@ class Etcd3BaseClient(object):
             delete_request.range_end = utils.to_bytes(range_end)
 
         return delete_request
+
+    def _ops_to_requests(self, ops):
+        """
+        Return a list of grpc requests.
+
+        Returns list from an input list of etcd3.transactions.{Put, Get,
+        Delete, Txn} objects.
+        """
+        request_ops = []
+        for op in ops:
+            if isinstance(op, transactions.Put):
+                request = self._build_put_request(op.key, op.value,
+                                                  op.lease, op.prev_kv)
+                request_op = etcdrpc.RequestOp(request_put=request)
+                request_ops.append(request_op)
+
+            elif isinstance(op, transactions.Get):
+                request = self._build_get_range_request(op.key, op.range_end)
+                request_op = etcdrpc.RequestOp(request_range=request)
+                request_ops.append(request_op)
+
+            elif isinstance(op, transactions.Delete):
+                request = self._build_delete_request(op.key, op.range_end,
+                                                     op.prev_kv)
+                request_op = etcdrpc.RequestOp(request_delete_range=request)
+                request_ops.append(request_op)
+
+            elif isinstance(op, transactions.Txn):
+                compare = [c.build_message() for c in op.compare]
+                success_ops = self._ops_to_requests(op.success)
+                failure_ops = self._ops_to_requests(op.failure)
+                request = etcdrpc.TxnRequest(compare=compare,
+                                             success=success_ops,
+                                             failure=failure_ops)
+                request_op = etcdrpc.RequestOp(request_txn=request)
+                request_ops.append(request_op)
+
+            else:
+                raise Exception(
+                    'Unknown request class {}'.format(op.__class__))
+        return request_ops
+
+    def _handle_transaction_responses(self, txn_response):
+        """
+        Return a list of response.
+
+        Returns list of response.
+        """
+        responses = []
+        for response in txn_response.responses:
+            response_type = response.WhichOneof('response')
+            if response_type in ['response_put', 'response_delete_range',
+                                 'response_txn']:
+                responses.append(response)
+
+            elif response_type == 'response_range':
+                range_kvs = []
+                for kv in response.response_range.kvs:
+                    range_kvs.append((kv.value,
+                                      KVMetadata(kv, txn_response.header)))
+                responses.append(range_kvs)
+        return responses

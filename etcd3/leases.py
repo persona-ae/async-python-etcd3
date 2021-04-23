@@ -36,20 +36,7 @@ class Lease(object):
         return self._get_lease_info().keys
 
 
-class AioLease(object):
-    """
-    A lease.
-
-    :ivar id: ID of the lease
-    :ivar ttl: time to live for this lease
-    """
-
-    def __init__(self, lease_id, ttl, etcd_client=None):
-        self.id = lease_id
-        self.ttl = ttl
-
-        self.etcd_client = etcd_client
-
+class AioLease(Lease):
     async def _get_lease_info(self):
         return await self.etcd_client.get_lease_info(self.id)
 
