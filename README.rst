@@ -112,12 +112,15 @@ Asyncio support is recent and is still experimental.
 
     etcd = await etcd3.aioclient()
 
-    foo = await etcd.get('foo')
+    foo = await etcd.get('/foo')
+    await etcd.put('bar', 'doot')
+    await etcd.delete('bar')
+    await etcd.delete_prefix('/foo')
 
-    foo_values = await etcd.get_prefix('foo')
+    foo_values = await etcd.get_prefix('/foo')
     for value, _ in foo_values:
         print(value)
 
-    await etcd.put('bar', 'doot')
-    await etcd.delete('bar')
-    await etcd.delete_prefix('foo')
+    foo_values = await etcd.get_range('/foo/1', '/foo/100')
+    for value, _ in foo_values:
+        print(value)

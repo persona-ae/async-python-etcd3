@@ -6,6 +6,7 @@ import contextlib
 import json
 import os
 import signal
+import string
 import subprocess
 import time
 
@@ -283,7 +284,7 @@ class TestEtcd3AioClient(object):
         compacted_revision = 0
 
         events_iterator, cancel = await etcd.watch(
-            b'/watchcompation', tart_revision=meta.mod_revision - 1)
+            b'/watchcompation', start_revision=meta.mod_revision - 1)
         try:
             async for event in events_iterator:
                 pass
@@ -420,6 +421,12 @@ class TestEtcd3AioClient(object):
         await task
         await etcd.cancel_watch(watch_id)
 
+        assert len(events) == 2
+        assert events[0].key.decode() == '/doot/watch/prefix/callback/0'
+        assert events[0].value.decode() == '0'
+        assert events[1].key.decode() == '/doot/watch/prefix/callback/1'
+        assert events[1].value.decode() == '1'
+
     async def test_compact(self, etcd):
         etcdctl('put', '/random', '1')  # Some data to compact
         _, meta = await etcd.get('/random')
@@ -427,6 +434,20 @@ class TestEtcd3AioClient(object):
         await etcd.compact(meta.mod_revision)
         with pytest.raises(grpc.RpcError):
             await etcd.compact(meta.mod_revision)
+
+    async def test_sequential_watch_prefix_once(self, etcd):
+        try:
+            await etcd.watch_prefix_once('/doot/', 1)
+        except etcd3.exceptions.WatchTimedOut:
+            pass
+        try:
+            await etcd.watch_prefix_once('/doot/', 1)
+        except etcd3.exceptions.WatchTimedOut:
+            pass
+        try:
+            await etcd.watch_prefix_once('/doot/', 1)
+        except etcd3.exceptions.WatchTimedOut:
+            pass
 
     async def test_get_prefix(self, etcd):
         for i in range(20):
@@ -467,12 +488,51 @@ class TestEtcd3AioClient(object):
         with pytest.raises(TypeError, match="Don't use "):
             await etcd.get_prefix('a_prefix', range_end='end')
 
+    async def test_get_range(self, etcd):
+        for char in string.ascii_lowercase:
+            if char < 'p':
+                etcdctl('put', '/doot/' + char, 'i am in range')
+            else:
+                etcdctl('put', '/doot/' + char, 'i am not in range')
+
+        values = list(await etcd.get_range('/doot/a', '/doot/p'))
+        assert len(values) == 15
+        for value, _ in values:
+            assert value == b'i am in range'
+
     async def test_range_not_found_error(self, etcd):
         for i in range(5):
             etcdctl('put', '/doot/notrange{}'.format(i), 'i am a not range')
 
         result = list(await etcd.get_prefix('/doot/range'))
         assert not result
+
+    async def test_all_not_found_error(self, etcd):
+        result = list(await etcd.get_all())
+        assert not result
+
+    async def test_get_all(self, etcd):
+        for i in range(20):
+            etcdctl('put', '/doot/range{}'.format(i), 'i am in all')
+
+        for i in range(5):
+            etcdctl('put', '/doot/notrange{}'.format(i), 'i am in all')
+        values = list(await etcd.get_all())
+        assert len(values) == 25
+        for value, _ in values:
+            assert value == b'i am in all'
+
+    async def test_get_all_keys_only(self, etcd):
+        for i in range(20):
+            etcdctl('put', '/doot/range{}'.format(i), 'i am in all')
+
+        for i in range(5):
+            etcdctl('put', '/doot/notrange{}'.format(i), 'i am in all')
+        values = list(await etcd.get_all(keys_only=True))
+        assert len(values) == 25
+        for value, meta in values:
+            assert meta.key.startswith(b"/doot/")
+            assert not value
 
     async def test_sort_order(self, etcd):
         def remove_prefix(string, prefix):

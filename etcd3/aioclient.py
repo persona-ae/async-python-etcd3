@@ -1,9 +1,11 @@
 import asyncio
+import asyncio.exceptions
 
 import grpc
 import grpc._channel
 
 import etcd3.etcdrpc as etcdrpc
+import etcd3.exceptions as exceptions
 import etcd3.utils as utils
 import etcd3.watch as watch
 from etcd3.baseclient import (
@@ -153,6 +155,72 @@ class Etcd3AioClient(Etcd3BaseClient):
         :returns: sequence of (value, metadata) tuples
         """
         range_response = await self.get_prefix_response(key_prefix, **kwargs)
+        return (
+            (kv.value, KVMetadata(kv, range_response.header))
+            for kv in range_response.kvs
+        )
+
+    @_handle_errors
+    async def get_range_response(self, range_start, range_end, sort_order=None,
+                                 sort_target='key', **kwargs):
+        """Get a range of keys."""
+        range_request = self._build_get_range_request(
+            key=range_start,
+            range_end=range_end,
+            sort_order=sort_order,
+            sort_target=sort_target,
+            **kwargs
+        )
+
+        return await self.kvstub.Range(
+            range_request,
+            timeout=self.timeout,
+            credentials=self.call_credentials,
+            metadata=self.metadata
+        )
+
+    async def get_range(self, range_start, range_end, **kwargs):
+        """
+        Get a range of keys.
+
+        :param range_start: first key in range
+        :param range_end: last key in range
+        :returns: sequence of (value, metadata) tuples
+        """
+        range_response = await self.get_range_response(range_start, range_end,
+                                                       **kwargs)
+        return (
+            (kv.value, KVMetadata(kv, range_response.header))
+            for kv in range_response.kvs
+        )
+
+    @_handle_errors
+    async def get_all_response(self, sort_order=None, sort_target='key',
+                               keys_only=False):
+        """Get all keys currently stored in etcd."""
+        range_request = self._build_get_range_request(
+            key=b'\0',
+            range_end=b'\0',
+            sort_order=sort_order,
+            sort_target=sort_target,
+            keys_only=keys_only,
+        )
+
+        return await self.kvstub.Range(
+            range_request,
+            timeout=self.timeout,
+            credentials=self.call_credentials,
+            metadata=self.metadata
+        )
+
+    async def get_all(self, **kwargs):
+        """
+        Get all keys currently stored in etcd.
+
+        :param keys_only: if True, retrieve only the keys, not the values
+        :returns: sequence of (value, metadata) tuples
+        """
+        range_response = await self.get_all_response(**kwargs)
         return (
             (kv.value, KVMetadata(kv, range_response.header))
             for kv in range_response.kvs
@@ -354,6 +422,61 @@ class Etcd3AioClient(Etcd3BaseClient):
             utils.prefix_range_end(utils.to_bytes(key_prefix))
 
         return await self.add_watch_callback(key_prefix, callback, **kwargs)
+
+    @_handle_errors
+    async def watch_once_response(self, key, timeout=None, **kwargs):
+        """
+        Watch a key and stop after the first response.
+
+        If the timeout was specified and response didn't arrive method
+        will raise ``WatchTimedOut`` exception.
+
+        :param key: key to watch
+        :param timeout: (optional) timeout in seconds.
+
+        :returns: ``WatchResponse``
+        """
+        response_queue = asyncio.Queue()
+
+        async def callback(response):
+            await response_queue.put(response)
+
+        watch_id = await self.add_watch_callback(key, callback, **kwargs)
+
+        try:
+            return await asyncio.wait_for(response_queue.get(),
+                                          timeout=timeout)
+        except asyncio.exceptions.TimeoutError:
+            raise exceptions.WatchTimedOut()
+        finally:
+            await self.cancel_watch(watch_id)
+
+    async def watch_once(self, key, timeout=None, **kwargs):
+        """
+        Watch a key and stop after the first event.
+
+        If the timeout was specified and event didn't arrive method
+        will raise ``WatchTimedOut`` exception.
+
+        :param key: key to watch
+        :param timeout: (optional) timeout in seconds.
+
+        :returns: ``Event``
+        """
+        response = await self.watch_once_response(key,
+                                                  timeout=timeout, **kwargs)
+        return response.events[0]
+
+    async def watch_prefix_once(self, key_prefix, timeout=None, **kwargs):
+        """
+        Watch a range of keys with a prefix and stop after the first event.
+
+        If the timeout was specified and event didn't arrive method
+        will raise ``WatchTimedOut`` exception.
+        """
+        kwargs['range_end'] = \
+            utils.prefix_range_end(utils.to_bytes(key_prefix))
+        return await self.watch_once(key_prefix, timeout=timeout, **kwargs)
 
     @_handle_errors
     async def cancel_watch(self, watch_id):
