@@ -8,7 +8,13 @@ import os
 import signal
 import string
 import subprocess
+import sys
 import time
+
+if sys.version_info < (3, 7):
+    from asyncio import ensure_future as create_task
+else:
+    from asyncio import create_task as create_task
 
 import grpc
 
@@ -240,8 +246,7 @@ class TestEtcd3AioClient(object):
             update_etcd('3')
             await asyncio.sleep(1)
 
-        task = asyncio.create_task(update_key(),
-                                   name="update_key_test_watch_key")
+        task = create_task(update_key())
 
         change_count = 0
         events_iterator, cancel = await etcd.watch(b'/doot/watch')
@@ -282,9 +287,7 @@ class TestEtcd3AioClient(object):
             update_etcd('3')
             await asyncio.sleep(1)
 
-        task = asyncio.create_task(
-            update_key(),
-            name="update_key_watch_key_with_revision_compacted")
+        task = create_task(update_key())
 
         # Compact etcd and test watcher
         _, meta = await etcd.get('/random')
@@ -333,9 +336,7 @@ class TestEtcd3AioClient(object):
             etcd.watcher._handle_response = _handle_response
 
         events_iterator, cancel = await etcd.watch('/foo')
-        asyncio.create_task(
-            raise_exception(),
-            name="raise_exception_watch_exception_during_watch")
+        create_task(raise_exception())
 
         with pytest.raises(etcd3.exceptions.ConnectionFailedError):
             async for _ in events_iterator:
@@ -379,8 +380,7 @@ class TestEtcd3AioClient(object):
             update_etcd('3')
             await asyncio.sleep(1)
 
-        task = asyncio.create_task(update_key(),
-                                   name="test_watch_prefix_update_key")
+        task = create_task(update_key())
 
         change_count = 0
         events_iterator, cancel = await etcd.watch_prefix(
@@ -422,8 +422,7 @@ class TestEtcd3AioClient(object):
         async def callback(event):
             events.extend(event.events)
 
-        task = asyncio.create_task(update_key(),
-                                   name="update_key_watch_prefix_callback")
+        task = create_task(update_key())
 
         watch_id = await etcd.add_watch_prefix_callback(
             '/doot/watch/prefix/callback/', callback)
@@ -468,7 +467,7 @@ class TestEtcd3AioClient(object):
             await etcd.watch_response('/doot/watch', start_revision=revision)
 
         response_1 = await responses_iterator.__anext__()
-        cancel()
+        await cancel()
         response_2 = await etcd.watch_once_response('/doot/watch',
                                                     start_revision=revision)
 
@@ -493,7 +492,7 @@ class TestEtcd3AioClient(object):
                                              start_revision=revision)
 
         response_1 = await responses_iterator.__anext__()
-        cancel()
+        await cancel()
         response_2 = await etcd.watch_prefix_once_response(
             '/doot/watch/prefix/', start_revision=revision)
 
@@ -551,6 +550,7 @@ class TestEtcd3AioClient(object):
         etcdctl('put', '/doot/key2', 'notdootdoot')
         range_end = utils.prefix_range_end(utils.to_bytes('/doot/'))
         compare = [etcd.transactions.value('/doot/', range_end) == 'dootdoot']
+        print(range_end)
         status, _ = await etcd.transaction(compare=compare,
                                            success=[],
                                            failure=[])
@@ -775,4 +775,3 @@ class TestEtcd3AioClient(object):
             for client_url in member.client_urls:
                 assert client_url.startswith('http://')
             assert isinstance(member.id, int) is True
-

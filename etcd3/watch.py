@@ -1,6 +1,12 @@
 import asyncio
 import logging
+import sys
 import threading
+
+if sys.version_info < (3, 7):
+    from asyncio import ensure_future as create_task
+else:
+    from asyncio import create_task as create_task
 
 import grpc
 
@@ -197,7 +203,7 @@ class AioWatcher:
                            start_revision=None, progress_notify=False,
                            filters=None, prev_kv=False):
         if not self._stream_task or self._stream_task.done():
-            self._stream_task = asyncio.create_task(self.watch_stream_task())
+            self._stream_task = create_task(self.watch_stream_task())
 
         async with self._create_lock:
             request = _create_watch_request(key, range_end=range_end,

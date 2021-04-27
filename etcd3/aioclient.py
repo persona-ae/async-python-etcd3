@@ -1,5 +1,5 @@
 import asyncio
-import asyncio.exceptions
+from asyncio import TimeoutError
 
 import grpc
 import grpc._channel
@@ -499,7 +499,7 @@ class Etcd3AioClient(Etcd3BaseClient):
         try:
             return await asyncio.wait_for(response_queue.get(),
                                           timeout=timeout)
-        except asyncio.exceptions.TimeoutError:
+        except TimeoutError:
             raise exceptions.WatchTimedOut()
         finally:
             await self.cancel_watch(watch_id)
