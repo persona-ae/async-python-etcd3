@@ -22,7 +22,9 @@ python-etcd3
 
 
 Eli Notes:
+
 - Forked from a fork of python-etcd3;  in particular the `rlegonidec:asyncio-2` branch on this [PR](https://github.com/kragniz/python-etcd3/pull/2098).
+
 - Note that we also maintain a few forks (`redbird` and `rocketry` in my `eli-persona` account), those were needed for supporting pydantic2.
 
 Python client for the etcd API v3, supported under python 2.7, 3.4 and 3.5.
